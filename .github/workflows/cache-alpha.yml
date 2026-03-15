@@ -1,0 +1,72 @@
+name: cache-alpha
+
+on:
+  workflow_dispatch:
+    inputs:
+      churn_key:
+        description: "Set true for controlled key churn bad-case"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: "[cache-step] group=hugo-resources-test"
+        id: hugo_res_cache
+        uses: actions/cache@v5
+        with:
+          path: test/resources/
+          key: hugo-resources-test|${{ runner.os }}|${{ hashFiles('test/assets/**/*', 'test/config.yaml', 'test/package.json') }}${{ inputs.churn_key == 'true' && format('|{0}', github.sha) || '' }}
+          restore-keys: |
+            hugo-resources-test|${{ runner.os }}|
+
+      - name: "[cache] group=hugo-resources-test hit=${{ steps.hugo_res_cache.outputs.cache-hit || 'false' }} key_fp=${{ hashFiles('test/assets/**/*', 'test/config.yaml', 'test/package.json') }} key_hint=test-resources"
+        run: echo "hugo resources cache marker emitted"
+
+      - name: Seed resources on cache miss
+        if: steps.hugo_res_cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p test/resources/cache-alpha
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > test/resources/cache-alpha/seed.txt
+
+  cache-gate:
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: ${{ always() }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run Cache Health Gate
+        id: gate
+        uses: eivindsjursen-lab/gates-suite-public-beta/packages/cache-health-gate@cache-health-gate/v1.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          mode: warn
+          no_baseline_behavior: warn
+          baseline_runs: "8"
+          baseline_window_days: "14"
+          baseline_event_filter: workflow_dispatch
+          debug: "true"
+
+      - name: Print outputs
+        run: |
+          echo "RESULT=${{ steps.gate.outputs.result }}"
+          echo "CONFIDENCE=${{ steps.gate.outputs.confidence }}"
+          echo "BASELINE_SAMPLES=${{ steps.gate.outputs.baseline_samples }}"
+          echo "REASON_CODES=${{ steps.gate.outputs.reason_codes }}"
